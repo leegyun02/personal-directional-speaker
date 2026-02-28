@@ -1,0 +1,263 @@
+#include <Wire.h>
+#include "HUSKYLENS.h"
+#include <Servo.h>
+
+HUSKYLENS huskylens;
+Servo servoX;
+Servo servoY;
+
+// -------------------- 기본 설정 --------------------
+const int SERVO_X_PIN = 9;
+const int SERVO_Y_PIN = 10;
+
+const int FRAME_W = 320;
+const int FRAME_H = 240;
+const int CENTER_X = FRAME_W / 2;   // 160
+const int CENTER_Y = FRAME_H / 2;   // 120
+
+bool INVERT_DIR_X = true;   // 기존 그대로
+bool INVERT_DIR_Y = true;  // 필요하면 true로 바꿔
+
+// -------------------- 제어 파라미터 (X) --------------------
+const int DEAD_BAND_X  = 30;
+const int REACT_BAND_X = 18;
+
+float Kp_far_x  = 0.18;
+float Ki_far_x  = 0.003;
+float Kd_far_x  = 0.05;
+
+float Kp_near_x = 0.09;
+float Ki_near_x = 0.002;
+float Kd_near_x = 0.03;
+
+float MAX_STEP_FAR_X  = 1.2f;
+float MAX_STEP_NEAR_X = 0.5f;
+float U_EMA_ALPHA_X   = 0.25f;
+
+// -------------------- 제어 파라미터 (Y = X의 2/3) --------------------
+const int DEAD_BAND_Y  = (int)(DEAD_BAND_X * 0.66);   // 30 -> 19~20 정도
+const int REACT_BAND_Y = (int)(REACT_BAND_X * 0.66);  // 18 -> 11~12 정도
+
+float Kp_far_y  = 0.18f * 0.66f;
+float Ki_far_y  = 0.003f * 0.66f;
+float Kd_far_y  = 0.05f * 0.66f;
+
+float Kp_near_y = 0.09f  * 0.66f;
+float Ki_near_y = 0.002f * 0.66f;
+float Kd_near_y = 0.03f  * 0.66f;
+
+float MAX_STEP_FAR_Y  = 1.2f * 0.66f;   // ~0.8
+float MAX_STEP_NEAR_Y = 0.5f * 0.66f;   // ~0.33
+float U_EMA_ALPHA_Y   = 0.25f;          // 이건 그대로 써도 돼
+
+// -------------------- 서보 설정 --------------------
+const int SERVO_MIN_X = 40, SERVO_MAX_X = 220, SERVO_CENTER_X = 130;
+const int SERVO_MIN_Y = 70, SERVO_MAX_Y = 130, SERVO_CENTER_Y = 100;
+const unsigned long WRITE_PERIOD_MS = 35;
+
+// X축 상태
+int   servoAngleX = SERVO_CENTER_X;
+float integX = 0.0f;
+float prevErrX = 0.0f;
+float u_f_X = 0.0f;
+
+// Y축 상태
+int   servoAngleY = SERVO_CENTER_Y;
+float integY = 0.0f;
+float prevErrY = 0.0f;
+float u_f_Y = 0.0f;
+
+unsigned long lastWrite = 0, prevMs = 0;
+
+// --- 끊김 처리용 ---
+int lostCount = 0;                 // 몇 프레임 동안 못봤는지
+HUSKYLENSResult lastTarget;        // 마지막으로 봤던 얼굴
+const int LOST_TOLERANCE   = 2;    // 이 정도 프레임은 그냥 이전 값으로 버틴다
+const int LOST_HOLD_FRAMES = 100;  // 이 이후부터 복귀 시작
+
+// -------------------- 함수 정의 --------------------
+bool getFace1(HUSKYLENSResult &out) {
+  if (!huskylens.request()) return false;
+  bool found = false; long best = -1;
+  while (huskylens.available()) {
+    HUSKYLENSResult r = huskylens.read();
+    if (r.command == COMMAND_RETURN_BLOCK && r.ID == 1) {
+      long area = (long)r.width * (long)r.height;
+      if (area > best) { best = area; out = r; found = true; }
+    }
+  }
+  return found;
+}
+
+// -------------------- SETUP --------------------
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  while (!huskylens.begin(Wire)) {
+    Serial.println("Begin failed");
+    delay(200);
+  }
+  servoX.attach(SERVO_X_PIN);
+  servoY.attach(SERVO_Y_PIN);
+  servoX.write(servoAngleX);
+  servoY.write(servoAngleY);
+
+  prevMs = millis();
+  Serial.println("Face1 2-axis precision PID tracking (X+Y)");
+}
+
+// -------------------- LOOP --------------------
+void loop() {
+  unsigned long now = millis();
+  float dt = (now - prevMs) / 1000.0f;
+  if (dt <= 0) dt = 0.001f;
+  prevMs = now;
+
+  HUSKYLENSResult t;
+  bool ok = getFace1(t);
+
+  if (ok) {
+    // 얼굴 보이면 끊김카운트 리셋
+    lostCount = 0;
+    lastTarget = t;
+  } else {
+    // 이번 프레임엔 못 봤음
+    lostCount++;
+
+    // 아주 짧게(1~2프레임)만 못 본 경우 -> 직전 타겟 그대로 쓰기
+    if (lostCount <= LOST_TOLERANCE) {
+      ok = true;
+      t = lastTarget;
+    }
+  }
+
+  if (ok) {
+    // ===================== X축 PID =====================
+    int dx = t.xCenter - CENTER_X;
+    int ax = abs(dx);
+
+    static bool inHoldX = false;
+    if (inHoldX) {
+      if (ax >= REACT_BAND_X) inHoldX = false;
+      else dx = 0;
+    } else {
+      if (ax <= DEAD_BAND_X) { inHoldX = true; dx = 0; }
+    }
+
+    float errX = (float)dx * (INVERT_DIR_X ? -1.0f : 1.0f);
+
+    float Kp_x = (ax < 25) ? Kp_near_x : Kp_far_x;
+    float Ki_x = (ax < 25) ? Ki_near_x : Ki_far_x;
+    float Kd_x = (ax < 25) ? Kd_near_x : Kd_far_x;
+    float maxStepX = (ax < 25) ? MAX_STEP_NEAR_X : MAX_STEP_FAR_X;
+
+    float integ_before_x = integX;
+    integX += errX * dt;
+
+    const float INTEG_MAX_X = 200.0f;
+    if (integX > INTEG_MAX_X) integX = INTEG_MAX_X;
+    if (integX < -INTEG_MAX_X) integX = -INTEG_MAX_X;
+
+    float derivX = (errX - prevErrX) / dt;
+    prevErrX = errX;
+
+    float uX = Kp_x * errX + Ki_x * integX + Kd_x * derivX;
+
+    bool atLowerLimitX = (servoAngleX <= SERVO_MIN_X + 1);
+    bool atUpperLimitX = (servoAngleX >= SERVO_MAX_X - 1);
+    if ((atLowerLimitX && uX < 0) || (atUpperLimitX && uX > 0)) {
+      integX = integ_before_x;
+      uX = Kp_x * errX + Ki_x * integX + Kd_x * derivX;
+    }
+
+    if (ax < 15) uX *= 0.5f;
+
+    u_f_X = U_EMA_ALPHA_X * uX + (1.0f - U_EMA_ALPHA_X) * u_f_X;
+    if (u_f_X >  maxStepX) u_f_X =  maxStepX;
+    if (u_f_X < -maxStepX) u_f_X = -maxStepX;
+
+    servoAngleX += (int)round(u_f_X);
+
+    // ===================== Y축 PID =====================
+    int dy = t.yCenter - CENTER_Y;
+    int ay = abs(dy);
+
+    static bool inHoldY = false;
+    if (inHoldY) {
+      if (ay >= REACT_BAND_Y) inHoldY = false;
+      else dy = 0;
+    } else {
+      if (ay <= DEAD_BAND_Y) { inHoldY = true; dy = 0; }
+    }
+
+    float errY = (float)dy * (INVERT_DIR_Y ? -1.0f : 1.0f);
+
+    float Kp_y = (ay < 25) ? Kp_near_y : Kp_far_y;
+    float Ki_y = (ay < 25) ? Ki_near_y : Ki_far_y;
+    float Kd_y = (ay < 25) ? Kd_near_y : Kd_far_y;
+    float maxStepY = (ay < 25) ? MAX_STEP_NEAR_Y : MAX_STEP_FAR_Y;
+
+    float integ_before_y = integY;
+    integY += errY * dt;
+
+    const float INTEG_MAX_Y = 200.0f;
+    if (integY > INTEG_MAX_Y) integY = INTEG_MAX_Y;
+    if (integY < -INTEG_MAX_Y) integY = -INTEG_MAX_Y;
+
+    float derivY = (errY - prevErrY) / dt;
+    prevErrY = errY;
+
+    float uY = Kp_y * errY + Ki_y * integY + Kd_y * derivY;
+
+    bool atLowerLimitY = (servoAngleY <= SERVO_MIN_Y + 1);
+    bool atUpperLimitY = (servoAngleY >= SERVO_MAX_Y - 1);
+    if ((atLowerLimitY && uY < 0) || (atUpperLimitY && uY > 0)) {
+      integY = integ_before_y;
+      uY = Kp_y * errY + Ki_y * integY + Kd_y * derivY;
+    }
+
+    if (ay < 15) uY *= 0.5f;
+
+    u_f_Y = U_EMA_ALPHA_Y * uY + (1.0f - U_EMA_ALPHA_Y) * u_f_Y;
+    if (u_f_Y >  maxStepY) u_f_Y =  maxStepY;
+    if (u_f_Y < -maxStepY) u_f_Y = -maxStepY;
+
+    servoAngleY += (int)round(u_f_Y);
+
+  } else {
+    // 둘 다 센터로 복귀시키는 쪽으로
+    if (lostCount > LOST_HOLD_FRAMES) {
+      if (abs(servoAngleX - SERVO_CENTER_X) > 1) {
+        servoAngleX += (servoAngleX < SERVO_CENTER_X) ? +1 : -1;
+      }
+      if (abs(servoAngleY - SERVO_CENTER_Y) > 1) {
+        servoAngleY += (servoAngleY < SERVO_CENTER_Y) ? +1 : -1;
+      }
+    }
+
+    // PID 내부 상태 천천히 식히기
+    prevErrX *= 0.9f;
+    u_f_X    *= 0.8f;
+    integX   *= 0.9f;
+
+    prevErrY *= 0.9f;
+    u_f_Y    *= 0.8f;
+    integY   *= 0.9f;
+  }
+
+  // --- 한계 보정 ---
+  if (servoAngleX < SERVO_MIN_X) servoAngleX = SERVO_MIN_X;
+  if (servoAngleX > SERVO_MAX_X) servoAngleX = SERVO_MAX_X;
+
+  if (servoAngleY < SERVO_MIN_Y) servoAngleY = SERVO_MIN_Y;
+  if (servoAngleY > SERVO_MAX_Y) servoAngleY = SERVO_MAX_Y;
+
+  // --- 출력 쓰기 ---
+  if (now - lastWrite >= WRITE_PERIOD_MS) {
+    servoX.write(servoAngleX);
+    servoY.write(servoAngleY);
+    lastWrite = now;
+  }
+
+  delay(20);
+}

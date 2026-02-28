@@ -1,0 +1,182 @@
+#include <Wire.h>
+#include "HUSKYLENS.h"
+#include <Servo.h>
+
+HUSKYLENS huskylens;
+Servo servo;
+
+// -------------------- 기본 설정 --------------------
+const int SERVO_PIN = 9;
+const int FRAME_W = 320;
+const int CENTER_X = FRAME_W / 2;   // 160
+bool INVERT_DIR = true;
+
+// -------------------- 제어 파라미터 --------------------
+const int DEAD_BAND  = 30;
+const int REACT_BAND = 18;
+
+float Kp_far  = 0.18;
+float Ki_far  = 0.003;
+float Kd_far  = 0.05;
+
+float Kp_near = 0.09;
+float Ki_near = 0.002;
+float Kd_near = 0.03;
+
+float MAX_STEP_FAR  = 1.2f;
+float MAX_STEP_NEAR = 0.5f;
+float U_EMA_ALPHA   = 0.25f;
+
+// -------------------- 서보 설정 --------------------
+const int SERVO_MIN = 40, SERVO_MAX = 220, SERVO_CENTER = 130;
+const unsigned long WRITE_PERIOD_MS = 35;
+
+int servoAngle = SERVO_CENTER;
+float integ = 0.0f;
+float prevErr = 0.0f;
+float u_f = 0.0f;
+unsigned long lastWrite = 0, prevMs = 0;
+
+// --- 끊김 처리용 ---
+int lostCount = 0;                 // 몇 프레임 동안 못봤는지
+HUSKYLENSResult lastTarget;        // 마지막으로 봤던 얼굴
+const int LOST_TOLERANCE = 2;      // 이 정도 프레임은 그냥 이전 값으로 버틴다
+const int LOST_HOLD_FRAMES = 100;    // 이 이후부터 복귀 시작
+
+// -------------------- 함수 정의 --------------------
+bool getFace1(HUSKYLENSResult &out) {
+  if (!huskylens.request()) return false;
+  bool found = false; long best = -1;
+  while (huskylens.available()) {
+    HUSKYLENSResult r = huskylens.read();
+    if (r.command == COMMAND_RETURN_BLOCK && r.ID == 1) {
+      long area = (long)r.width * (long)r.height;
+      if (area > best) { best = area; out = r; found = true; }
+    }
+  }
+  return found;
+}
+
+// -------------------- SETUP --------------------
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  while (!huskylens.begin(Wire)) {
+    Serial.println("Begin failed");
+    delay(200);
+  }
+  servo.attach(SERVO_PIN);
+  servo.write(servoAngle);
+  prevMs = millis();
+  Serial.println("Face1 precision PID tracking (Anti-Windup + loss smoothing)");
+}
+
+// -------------------- LOOP --------------------
+void loop() {
+  unsigned long now = millis();
+  float dt = (now - prevMs) / 1000.0f;
+  if (dt <= 0) dt = 0.001f;
+  prevMs = now;
+
+  HUSKYLENSResult t;
+  bool ok = getFace1(t);
+
+  if (ok) {
+    // 얼굴 보이면 끊김카운트 리셋
+    lostCount = 0;
+    lastTarget = t;
+  } else {
+    // 이번 프레임엔 못 봤음
+    lostCount++;
+
+    // 아주 짧게(1~2프레임)만 못 본 경우 -> 직전 타겟 그대로 쓰기
+    if (lostCount <= LOST_TOLERANCE) {
+      ok = true;
+      t = lastTarget;
+    }
+  }
+
+  if (ok) {
+    int dx = t.xCenter - CENTER_X;
+    int ax = abs(dx);
+
+    // --- 데드밴드 + 히스테리시스 ---
+    static bool inHold = false;
+    if (inHold) {
+      if (ax >= REACT_BAND) inHold = false;
+      else dx = 0;
+    } else {
+      if (ax <= DEAD_BAND) { inHold = true; dx = 0; }
+    }
+
+    float err = (float)dx * (INVERT_DIR ? -1.0f : 1.0f);
+
+    // --- 게인 선택 ---
+    float Kp = (ax < 25) ? Kp_near : Kp_far;
+    float Ki = (ax < 25) ? Ki_near : Ki_far;
+    float Kd = (ax < 25) ? Kd_near : Kd_far;
+    float maxStep = (ax < 25) ? MAX_STEP_NEAR : MAX_STEP_FAR;
+
+    // --- PID 연산 ---
+    float integ_before = integ;
+    integ += err * dt;
+
+    // 안티윈드업 (기본 한도)
+    const float INTEG_MAX = 200.0f;
+    if (integ > INTEG_MAX) integ = INTEG_MAX;
+    if (integ < -INTEG_MAX) integ = -INTEG_MAX;
+
+    // 미분
+    float deriv = (err - prevErr) / dt;
+    prevErr = err;
+
+    // PID 출력
+    float u = Kp * err + Ki * integ + Kd * deriv;
+
+    // --- Anti-Windup (출력 한계 시 적분 차단) ---
+    bool atLowerLimit = (servoAngle <= SERVO_MIN + 1);
+    bool atUpperLimit = (servoAngle >= SERVO_MAX - 1);
+    if ((atLowerLimit && u < 0) || (atUpperLimit && u > 0)) {
+      integ = integ_before; // 적분 되돌리기
+      u = Kp * err + Ki * integ + Kd * deriv;
+    }
+
+    // 중심 근처 감쇠
+    if (ax < 15) u *= 0.5f;
+
+    // 스무딩 + 제한
+    u_f = U_EMA_ALPHA * u + (1.0f - U_EMA_ALPHA) * u_f;
+    if (u_f >  maxStep) u_f =  maxStep;
+    if (u_f < -maxStep) u_f = -maxStep;
+
+    // 각도 갱신
+    servoAngle += (int)round(u_f);
+
+  } else {
+    // 여기로 온 건 "진짜로 몇 프레임 동안 얼굴이 없다"는 뜻
+    // 바로 훅 돌아가지 말고, 일정 프레임 버티다가 천천히 센터로
+    if (lostCount > LOST_HOLD_FRAMES) {
+      if (abs(servoAngle - SERVO_CENTER) > 1) {
+        // 아주 천천히
+        servoAngle += (servoAngle < SERVO_CENTER) ? +1 : -1;
+      }
+    }
+
+    // PID 내부 상태는 서서히 식히기
+    prevErr *= 0.9f;
+    u_f     *= 0.8f;
+    integ   *= 0.9f;
+  }
+
+  // --- 한계 보정 ---
+  if (servoAngle < SERVO_MIN) servoAngle = SERVO_MIN;
+  if (servoAngle > SERVO_MAX) servoAngle = SERVO_MAX;
+
+  // --- 출력 쓰기 ---
+  if (now - lastWrite >= WRITE_PERIOD_MS) {
+    servo.write(servoAngle);
+    lastWrite = now;
+  }
+
+  delay(20);
+}
