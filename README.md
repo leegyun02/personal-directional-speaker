@@ -5,7 +5,7 @@
 
 ## 프로젝트 개요 (Background)
 
-기존 스피커는 소리를 사방으로 확산시키는 구조로 설계되어 있어,  
+기존 스피커는 소리를 사방으로 확산시키는 구조로 설계되어 있어  
 특정 사용자에게만 음성을 전달하기 어렵고 주변에 불필요한 소음이 발생하는 문제가 있습니다.
 
 본 프로젝트는 **초음파 기반 지향성 음향 기술(Parametric Speaker)** 과  
@@ -26,7 +26,7 @@
 - X/Y 2축 서보모터 제어
 - 병렬 PID 제어 구조 적용
 - Deadband 기반 진동 억제
-- 거리 기반 가중치 제어 (Gain Scheduling)
+- 거리 기반 Gain Scheduling
 - Lost Mode 상태 머신 설계
 
 ---
@@ -36,11 +36,11 @@
 ### 전체 신호 흐름
 
 HuskyLens (AI Tracking)  
-      ↓ I2C  
+↓ I2C  
 MCU (PID Controller)  
-      ↓ PWM  
+↓ PWM  
 Dual Servo Motor (X/Y)  
-      ↓  
+↓  
 Parametric Speaker (40kHz Array)
 
 ---
@@ -54,42 +54,54 @@ Parametric Speaker (40kHz Array)
 
 ---
 
+## HuskyLens 좌표계
+
+![Coordinate System](hardware/huskylens_coordinate_system.png)
+
+- 해상도: 320 × 240
+- 중심 좌표: (160, 120)
+- PID 제어는 중심 좌표와 측정 좌표의 오차를 기반으로 동작
+
+---
+
+## HuskyLens 모듈
+
+![HuskyLens Module](hardware/huskylens_module_overview.png)
+
+- CNN 기반 객체 인식
+- I2C 통신으로 MCU에 좌표 데이터 전송
+- 실시간 Tracking 모드 사용
+
+---
+
 ## 제어 흐름도 (Control Flow Diagram)
 
-시스템은 전원 인가 후 초기화를 수행하고,  
-객체 인식 여부에 따라 Tracking Mode와 Lost Mode로 분기하는  
-상태 머신(State Machine) 구조로 설계되었습니다.
+![Control Flow](hardware/control_flow_diagram.png)
 
-![Control Flow](assets/control_flow.png)
+### 상태 머신 동작 과정
 
-### 동작 과정
-
-1. 시스템 전원 ON → 마이크로프로세서 초기화
-2. 서보모터 기준 각도(Center) 설정
-3. 객체 인식 여부 판단
-   - 인식 성공 → Tracking Mode 진입
-   - 인식 실패 → Lost Mode 진입
-4. Tracking Mode
-   - 위치 오차 계산
-   - PID 제어 수행
-   - PWM 신호 생성
-   - 서보모터 구동
+1. Controller Power ON
+2. Microprocessor 초기화
+3. 서보모터 Center 초기화
+4. 객체 인식 여부 판단
+   - Yes → Tracking Mode
+   - No → Lost Mode
+5. Tracking Mode
+   - PID 제어
+   - PWM 출력
+   - 서보 구동
    - 루프 반복
-5. Lost Mode
-   - 일정 시간 동안 마지막 위치 유지
+6. Lost Mode
+   - 일정 시간 위치 유지
    - 임계 시간 초과 시 안전 복귀
 
 ---
 
-## 2축 PID 제어 블록도 (Dual-Axis PID Block Diagram)
+## 2축 PID 제어 블록도
 
-![PID Block Diagram](assets/pid_block.png)
+![PID Block](hardware/pid_block_diagram.png)
 
-### 제어 구조
-
-입력:
-- 목표 위치 (X_ref, Y_ref)
-- 측정 위치 (X_meas, Y_meas)
+### 제어 수식
 
 오차 계산:
 
@@ -106,100 +118,81 @@ u(t) = Kp·e(t) + Ki∫e(t)dt + Kd·de(t)/dt
 출력:
 - 출력 제한 로직 (Limiter)
 - PWM 변환
-- 서보모터 각도 제어 (θ_x, θ_y)
+- 서보모터 각도 제어 (θx, θy)
 
-HuskyLens에서 측정된 좌표는 실시간으로 피드백되어  
-폐루프 제어(Closed-loop control)를 형성합니다.
-
----
-
-## 지향성 음향 원리 (Parametric Speaker Principle)
-
-40kHz 초음파 캐리어를 활용하여 공기 중 비선형 상호작용을 유도합니다.
-
-두 초음파가 중첩되면 다음과 같은 성분이 생성됩니다:
-
-
-cos(a)·cos(b) = 1/2 [cos(a+b) + cos(a-b)]
-
-
-예시:
-- 40kHz + 41kHz → 81kHz (합 주파수)
-- 41kHz - 40kHz → 1kHz (차 주파수 → 가청음)
-
-이를 통해 특정 방향으로만 소리가 전달되는 음향 빔(Beam)을 형성합니다.
+폐루프(Closed-loop) 구조로 실시간 피드백 제어 수행
 
 ---
 
-## 객체 추적 시스템 (AI Tracking)
+## 초음파 구동 회로
 
-- 모듈: HuskyLens
-- 해상도: 320 × 240
-- 출력값: (X_meas, Y_meas), width, height, ID
-- 통신 방식: I2C
+![Ultrasonic Driver](hardware/ultrasonic_driver_circuit.png)
 
-CNN 기반 객체 인식을 통해 얼굴 중심 좌표를 추출하고  
-이를 제어 입력으로 사용합니다.
+- 40kHz 캐리어 생성
+- 오실레이터 및 필터 회로
+- 초음파 트랜스듀서 배열 구동
 
 ---
 
-## 하드웨어 구성
+## 최종 프로토타입
+
+![Final Prototype](hardware/prototype_system.jpg)
 
 - 40kHz 초음파 트랜스듀서 × 50
-- Arduino 기반 MCU
-- HuskyLens AI Vision Sensor
-- 서보모터 × 2 (X/Y)
-- 초음파 구동 회로 (오실레이터 + 필터 + 드라이버 IC)
+- HuskyLens 카메라 모듈
+- 2축 서보모터 구조
+- 초음파 구동 보드 내장
 
 ---
 
 ## 저장소 구조 (Repository Structure)
 
-
-```bash
-
+```plaintext
+PERSONAL-DIRECTIONAL-SPEAKER/
 ├── README.md
-├── assets/
-│   ├── control_flow.png
-│   └── pid_block.png
 ├── code/
-│   ├── x_axis_tracking/
-│   └── xy_axis_pid_tracking/
-└── docs/
-    └── Poster.png
-    └── presentation meterial
-```
+│   ├── x_axis_tracking
+│   └── xy_axis_pid_tracking
+├── docs/
+│   ├── Poster.png
+│   └── Capstone_Report.txt
+├── hardware/
+│   ├── control_flow_diagram.png
+│   ├── huskylens_coordinate_system.png
+│   ├── huskylens_module_overview.png
+│   ├── pid_block_diagram.png
+│   ├── prototype_system.jpg
+│   └── ultrasonic_driver_circuit.png
+└── media/
+시연 영상
 
----
+(유튜브 링크 추가)
 
-## 시연 영상
+기대 효과
 
-(여기에 유튜브 링크 추가)
+공공장소 소음 최소화
 
----
+개인 맞춤형 음향 전달
 
-## 기대 효과 및 활용 분야
+박물관/전시장 음성 안내 시스템
 
-- 공공장소 소음 최소화
-- 박물관/전시장 맞춤형 음성 안내
-- 병원·복지시설 개인 알림 시스템
-- 스마트홈 개인 음성 전달
-- 접근성 보조 시스템 확장 가능
+병원·복지시설 개인 알림 시스템
 
----
+스마트홈 확장 가능
 
-## 향후 개선 방향
+향후 개선 방향
 
-- 밀폐 공간 내 반사 문제 개선
-- 흡음재 및 차폐 구조 설계
-- 제어 정밀도 향상
-- 초음파 배열 최적화
+밀폐 공간 반사 문제 개선
 
----
+흡음재 및 차폐 구조 설계
 
-## 프로젝트 정보
+제어 정밀도 향상
 
-인천대학교 전기공학과  
-2025-2학기 캡스톤 디자인  
+초음파 배열 최적화
 
-팀장 : 이기현
+프로젝트 정보
+
+인천대학교 전기공학과
+2025-2학기 캡스톤 디자인
+
+팀장: 이기현
