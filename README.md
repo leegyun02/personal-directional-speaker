@@ -1,202 +1,108 @@
 # 사용자 추적 기반 지향성 음향 시스템
 
-🏆 2025-2학기 인천대학교 캡스톤 디자인 대상 수상  
-👨‍💼 팀장 수행 프로젝트
-
-## 초음파 파라메트릭 스피커와 AI 객체 추적을 활용한 1:1 개인화 청각환경 구현
-
----
+초음파 파라메트릭 스피커와 얼굴 추적 기술을 결합한 사용자 추적형 음향 시스템입니다. HuskyLens가 사용자의 위치를 인식하면 MCU가 X/Y축 위치 오차를 계산하고, 두 개의 서보모터로 스피커의 방향을 조절합니다.
 
 ## 프로젝트 개요
 
-기존 스피커는 소리를 사방으로 확산시키는 구조로 설계되어 있어  
-특정 사용자에게만 음성을 전달하기 어렵고 주변에 불필요한 소음이 발생하는 문제가 있습니다.
+일반적인 스피커는 소리를 넓은 범위로 확산하기 때문에 특정 방향으로 음향을 전달하기 어렵습니다. 이 프로젝트는 초음파 기반 지향성 음향과 사용자 추적 제어의 결합 가능성을 확인하는 것을 목표로 합니다.
 
-본 프로젝트는 **초음파 기반 지향성 음향 기술(Parametric Speaker)** 과  
-**AI 기반 객체 추적 시스템(HuskyLens)**,  
-그리고 **2축 병렬 PID 제어 알고리즘**을 결합하여
-
-> 특정 사용자에게만 소리를 전달하고  
-> 사용자의 움직임을 실시간으로 추적하며  
-> 스피커 방향을 자동으로 제어하는  
-> 1:1 개인화 청각 환경 시스템을 구현하는 것을 목표로 합니다.
-
----
-
-## 주요 기능
-
-- 40kHz 초음파 기반 지향성 음향 송출
-- HuskyLens 기반 실시간 얼굴 추적
-- X/Y 2축 서보모터 제어
-- 병렬 PID 제어 구조 적용
-- Deadband 기반 진동 억제
-- 거리 기반 Gain Scheduling
-- Lost Mode 상태 머신 설계
-
----
+- 40 kHz 초음파 트랜스듀서 배열을 이용한 지향성 음향 송출
+- HuskyLens의 얼굴 인식 및 좌표 추적
+- X/Y축 독립 PID 제어를 이용한 스피커 방향 조절
+- 추적 상태에 따른 제어 출력 보정 로직
 
 ## 시스템 구성
 
-### 전체 신호 흐름
-
-HuskyLens (AI Tracking)  
-↓ I2C  
-MCU (PID Controller)  
-↓ PWM  
-Dual Servo Motor (X/Y)  
-↓  
-Parametric Speaker (40kHz Array)
-
----
-
-### 동작 설명
-
-- 카메라 모듈(HuskyLens)이 사용자 위치를 실시간 추적
-- MCU에서 위치 오차 계산 및 PID 제어 수행
-- 서보모터를 통해 스피커 방향 자동 조정
-- 초음파 자가복조(Self-Demodulation)를 통해 가청음 생성
-
----
-
-## HuskyLens 좌표계
-
-![Coordinate System](hardware/huskylens_coordinate_system.png)
-
-- 해상도: 320 × 240
-- 중심 좌표: (160, 120)
-- PID 제어는 중심 좌표와 측정 좌표의 오차를 기반으로 동작
-
----
-
-## HuskyLens 모듈
-
-![HuskyLens Module](hardware/huskylens_module_overview.png)
-
-- CNN 기반 객체 인식
-- I2C 통신으로 MCU에 좌표 데이터 전송
-- 실시간 Tracking 모드 사용
-
----
-
-## 제어 흐름도 (Control Flow Diagram)
-
-![Control Flow](hardware/control_flow_diagram.png)
-
-### 상태 머신 동작 과정
-
-1. Controller Power ON
-2. Microprocessor 초기화
-3. 서보모터 Center 초기화
-4. 객체 인식 여부 판단
-   - Yes → Tracking Mode
-   - No → Lost Mode
-5. Tracking Mode
-   - PID 제어
-   - PWM 출력
-   - 서보 구동
-   - 루프 반복
-6. Lost Mode
-   - 일정 시간 위치 유지
-   - 임계 시간 초과 시 안전 복귀
-
----
-
-## 2축 PID 제어 블록도
-
-![PID Block](hardware/pid_block_diagram.png)
-
-### 제어 수식
-
-오차 계산:
-
-error = reference - measurement
-
-PID 제어식:
-
-u(t) = Kp·e(t) + Ki∫e(t)dt + Kd·de(t)/dt
-
-출력:
-
-- 출력 제한 로직 (Limiter)
-- PWM 변환
-- 서보모터 각도 제어 (θx, θy)
-
-폐루프(Closed-loop) 구조로 실시간 피드백 제어 수행
-
----
-
-## 초음파 구동 회로
-
-![Ultrasonic Driver](hardware/ultrasonic_driver_circuit.png)
-
-- 40kHz 캐리어 생성
-- 오실레이터 및 필터 회로
-- 초음파 트랜스듀서 배열 구동
-
----
-
-## 최종 프로토타입
-
-![Final Prototype](hardware/prototype_system.jpg)
-
-- 40kHz 초음파 트랜스듀서 × 50
-- HuskyLens 카메라 모듈
-- 2축 서보모터 구조
-- 초음파 구동 보드 내장
-
----
-
-## 저장소 구조 (Repository Structure)
-
-```plaintext
-PERSONAL-DIRECTIONAL-SPEAKER/
-├── README.md
-├── code/
-│   ├── x_axis_tracking
-│   └── xy_axis_pid_tracking
-├── docs/
-│   ├── Poster.png
-│   └── Capstone_Report.txt
-├── hardware/
-│   ├── control_flow_diagram.png
-│   ├── huskylens_coordinate_system.png
-│   ├── huskylens_module_overview.png
-│   ├── pid_block_diagram.png
-│   ├── prototype_system.jpg
-│   └── ultrasonic_driver_circuit.png
-└── media/
+```text
+HuskyLens
+    │ I2C: 사용자 중심 좌표
+    ▼
+MCU
+    │ PWM: X/Y축 제어 신호
+    ▼
+2축 서보모터
+    │ 스피커 방향 조절
+    ▼
+40 kHz 파라메트릭 스피커
 ```
 
----
+HuskyLens는 320 × 240 화면에서 사용자의 중심 좌표를 측정합니다. MCU는 화면 중심인 `(160, 120)`과 측정 좌표의 차이를 각 축의 제어 오차로 사용합니다.
 
-## 시연 영상
+![HuskyLens 좌표계](hardware/huskylens_coordinate_system.png)
 
-(여기에 유튜브 링크 추가)
+## 동작 방식
 
----
+1. 시스템을 초기화하고 서보모터를 기준 위치로 이동합니다.
+2. HuskyLens가 학습된 얼굴을 감지해 중심 좌표를 MCU에 전달합니다.
+3. MCU가 X축과 Y축의 위치 오차를 각각 계산합니다.
+4. 각 축의 PID 제어 결과를 PWM 신호로 변환해 서보모터를 구동합니다.
+5. 얼굴을 놓치면 마지막 위치를 잠시 유지한 뒤 기준 위치로 천천히 복귀합니다.
 
-## 기대 효과 및 활용 분야
+![제어 흐름도](hardware/control_flow_diagram.png)
 
-- 공공장소 소음 최소화
-- 박물관/전시장 맞춤형 음성 안내
-- 병원·복지시설 개인 알림 시스템
-- 스마트홈 개인 음성 전달
-- 접근성 보조 시스템 확장 가능
+## 제어 알고리즘
 
----
+각 축의 제어기는 다음 PID 식을 기준으로 동작합니다.
 
-## 향후 개선 방향
+```text
+e(t) = reference - measurement
+u(t) = Kp·e(t) + Ki·∫e(t)dt + Kd·de(t)/dt
+```
 
-- 밀폐 공간 내 반사 문제 개선
-- 흡음재 및 차폐 구조 설계
-- 제어 정밀도 향상
-- 초음파 배열 최적화
+기본 PID 제어에 다음 보정 로직을 추가했습니다.
 
----
+- **Deadband와 히스테리시스:** 중심 부근의 작은 오차를 제어 입력에서 제외합니다.
+- **Gain scheduling:** 오차 크기에 따라 PID 게인과 축별 최대 이동량을 조절합니다.
+- **출력 제한 및 anti-windup:** 서보모터의 동작 범위를 제한하고, 한계 위치에서는 직전 적분값으로 되돌립니다.
+- **출력 평활화:** 제어 출력에 지수 이동 평균을 적용합니다.
+- **Lost mode:** 일시적인 인식 실패에는 마지막 좌표를 사용하고, 장시간 대상을 찾지 못하면 중앙으로 복귀합니다.
+
+![2축 PID 제어 블록도](hardware/pid_block_diagram.png)
+
+## 지향성 음향
+
+40 kHz 초음파 트랜스듀서 50개를 배열해 송출부를 구성했습니다. 변조된 초음파가 공기 중에서 전파될 때 발생하는 비선형 상호작용과 자기 복조(self-demodulation)를 이용하는 방식입니다.
+
+![초음파 구동 회로](hardware/ultrasonic_driver_circuit.png)
+
+## 프로토타입
+
+프로토타입은 다음 부품으로 구성됩니다.
+
+- 40 kHz 초음파 트랜스듀서 50개
+- HuskyLens 카메라 모듈
+- X/Y축 서보모터
+- 초음파 신호 생성 및 구동 회로
+- 제어용 MCU
+
+![최종 프로토타입](hardware/prototype_system.jpg)
+
+## 소스 코드
+
+- `code/x_axis_tracking/x_axis_tracking`: X축 단일 서보 추적 코드
+- `code/xy_axis_pid_tracking/xy_axis_pid_tracking`: X/Y축 병렬 PID 추적 코드
+
+코드는 Arduino 환경을 기준으로 작성했으며 `Wire`, `HUSKYLENS`, `Servo` 라이브러리를 사용합니다. 2축 코드의 기본 서보 핀은 X축 9번, Y축 10번입니다. 추적 전 HuskyLens에서 대상 얼굴을 ID 1로 학습하고 I2C 통신 모드로 설정해야 합니다.
+
+## 저장소 구조
+
+```text
+.
+├── code/       # Arduino 추적 제어 코드
+├── docs/       # 프로젝트 보고서와 포스터
+├── hardware/   # 시스템 구성도, 회로도, 프로토타입 사진
+└── README.md
+```
+
+## 향후 개선 사항
+
+- 밀폐 공간에서 발생하는 음향 반사 저감
+- 흡음재 및 차폐 구조 최적화
+- 추적 및 제어 정밀도 향상
+- 초음파 트랜스듀서 배열 최적화
 
 ## 프로젝트 정보
 
-- 인천대학교 전기공학과
-- 2025-2학기 캡스톤 디자인
-- 대상 수상
-- 팀장: 이기현
+- 소속: 인천대학교 전기공학과
+- 과정: 2025학년도 2학기 캡스톤디자인
+- 수상: 대상
